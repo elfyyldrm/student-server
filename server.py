@@ -3,6 +3,8 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
+submissions = []
+
 class Submission(BaseModel):
     student_id: str
     answer: str
@@ -13,7 +15,9 @@ def home():
 
 @app.post("/submit")
 def submit(data: Submission):
-    with open("submissions.txt", "a") as f:
-        f.write(f"{data.student_id} {data.answer}\n")
-
+    submissions.append(data)
     return {"status": "received"}
+
+@app.get("/submissions")
+def get_submissions():
+    return submissions
