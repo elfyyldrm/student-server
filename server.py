@@ -13,8 +13,7 @@ def home():
 
 @app.post("/submit")
 def submit(data: Submission):
-    print("New submission:", data)
-    return {
-        "status": "received",
-        "student_id": data.student_id
-    }
+    with open("submissions.txt", "a") as f:
+        f.write(f"{data.student_id} {data.answer}\n")
+
+    return {"status": "received"}
