@@ -10,7 +10,7 @@ import psycopg
 app = FastAPI()
 
 TIMEZONE = ZoneInfo("Europe/Istanbul")
-OPEN_HOUR = 9
+OPEN_HOUR = 4
 CLOSE_HOUR = 17
 DATABASE_URL = os.getenv("DATABASE_URL")
 
