@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import os
@@ -16,10 +16,31 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 class StudentInfo(BaseModel):
-    ad: str
-    soyad: str
-    yas: int
-    ilgi_alanlari: list[str]
+    first_name: str
+    last_name: str
+    age: int
+    interests: list[str]
+
+    @field_validator("first_name", "last_name")
+    @classmethod
+    def validate_names(cls, v):
+        if not v or not v.strip():
+            raise ValueError("This field cannot be empty.")
+        return v.strip()
+
+    @field_validator("age")
+    @classmethod
+    def validate_age(cls, v):
+        if not isinstance(v, int) or v <= 0:
+            raise ValueError("Age must be a positive integer.")
+        return v
+
+    @field_validator("interests")
+    @classmethod
+    def validate_interests(cls, v):
+        if not isinstance(v, list) or len(v) < 3:
+            raise ValueError("Interests must be a list with at least 3 items.")
+        return v
 
 
 def server_open_now() -> bool:
@@ -40,10 +61,10 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS submissions (
                     id SERIAL PRIMARY KEY,
                     type TEXT NOT NULL,
-                    ad TEXT,
-                    soyad TEXT,
-                    yas INTEGER,
-                    ilgi_alanlari JSONB,
+                    first_name TEXT,
+                    last_name TEXT,
+                    age INTEGER,
+                    interests JSONB,
                     original_filename TEXT,
                     content_json JSONB,
                     server_note TEXT,
@@ -78,24 +99,35 @@ def submit_json(data: StudentInfo):
         )
 
     processed_at = datetime.now(TIMEZONE)
-    server_note = "JSON verisi alındı ve işlendi."
+    server_note = "Your JSON data was received and processed by the server."
     status = "processed"
+
+    response_payload = {
+        "first_name": data.first_name,
+        "last_name": data.last_name,
+        "age": data.age,
+        "interests": data.interests,
+        "submission_type": "json",
+        "server_note": server_note,
+        "processed_at": processed_at.isoformat(),
+        "status": status
+    }
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO submissions
-                (type, ad, soyad, yas, ilgi_alanlari, original_filename, content_json, server_note, processed_at, status)
+                (type, first_name, last_name, age, interests, original_filename, content_json, server_note, processed_at, status)
                 VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
                 RETURNING id
             """, (
                 "json",
-                data.ad,
-                data.soyad,
-                data.yas,
-                json.dumps(data.ilgi_alanlari, ensure_ascii=False),
+                data.first_name,
+                data.last_name,
+                data.age,
+                json.dumps(data.interests, ensure_ascii=False),
                 None,
-                json.dumps(data.model_dump(), ensure_ascii=False),
+                json.dumps(response_payload, ensure_ascii=False),
                 server_note,
                 processed_at,
                 status
@@ -103,17 +135,8 @@ def submit_json(data: StudentInfo):
             submission_id = cur.fetchone()[0]
         conn.commit()
 
-    return {
-        "id": submission_id,
-        "type": "json",
-        "ad": data.ad,
-        "soyad": data.soyad,
-        "yas": data.yas,
-        "ilgi_alanlari": data.ilgi_alanlari,
-        "server_note": server_note,
-        "processed_at": processed_at.isoformat(),
-        "status": status
-    }
+    response_payload["id"] = submission_id
+    return response_payload
 
 
 @app.post("/submit-file")
@@ -124,35 +147,48 @@ async def submit_file(file: UploadFile = File(...)):
             detail="Server is closed right now. Try again during open hours."
         )
 
-    if not file.filename.endswith(".json"):
-        raise HTTPException(status_code=400, detail="Please upload a .json file")
+    if not file.filename.lower().endswith(".json"):
+        raise HTTPException(status_code=400, detail="Please upload a .json file.")
 
     content = await file.read()
 
     try:
-        data = json.loads(content.decode("utf-8"))
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON file")
+        raw_data = json.loads(content.decode("utf-8"))
+        data = StudentInfo(**raw_data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON content: {str(e)}")
 
     processed_at = datetime.now(TIMEZONE)
-    server_note = "Dosya server tarafından işlendi."
+    server_note = "Your file was received and processed by the server."
     status = "processed"
+
+    modified_data = {
+        "first_name": data.first_name,
+        "last_name": data.last_name,
+        "age": data.age,
+        "interests": data.interests,
+        "submission_type": "file",
+        "original_filename": file.filename,
+        "server_note": server_note,
+        "processed_at": processed_at.isoformat(),
+        "status": status
+    }
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO submissions
-                (type, ad, soyad, yas, ilgi_alanlari, original_filename, content_json, server_note, processed_at, status)
+                (type, first_name, last_name, age, interests, original_filename, content_json, server_note, processed_at, status)
                 VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
                 RETURNING id
             """, (
                 "file",
-                data.get("ad"),
-                data.get("soyad"),
-                data.get("yas"),
-                json.dumps(data.get("ilgi_alanlari", []), ensure_ascii=False),
+                data.first_name,
+                data.last_name,
+                data.age,
+                json.dumps(data.interests, ensure_ascii=False),
                 file.filename,
-                json.dumps(data, ensure_ascii=False),
+                json.dumps(modified_data, ensure_ascii=False),
                 server_note,
                 processed_at,
                 status
@@ -160,12 +196,7 @@ async def submit_file(file: UploadFile = File(...)):
             submission_id = cur.fetchone()[0]
         conn.commit()
 
-    modified_data = dict(data)
     modified_data["id"] = submission_id
-    modified_data["server_note"] = server_note
-    modified_data["processed_at"] = processed_at.isoformat()
-    modified_data["status"] = status
-
     return JSONResponse(content=modified_data)
 
 
@@ -174,8 +205,8 @@ def get_submissions():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, type, ad, soyad, yas, ilgi_alanlari, original_filename,
-                       content_json, server_note, processed_at, status
+                SELECT id, type, first_name, last_name, age, interests,
+                       original_filename, content_json, server_note, processed_at, status
                 FROM submissions
                 ORDER BY id DESC
             """)
@@ -186,10 +217,10 @@ def get_submissions():
         result.append({
             "id": row[0],
             "type": row[1],
-            "ad": row[2],
-            "soyad": row[3],
-            "yas": row[4],
-            "ilgi_alanlari": row[5],
+            "first_name": row[2],
+            "last_name": row[3],
+            "age": row[4],
+            "interests": row[5],
             "original_filename": row[6],
             "content_json": row[7],
             "server_note": row[8],
@@ -205,8 +236,8 @@ def download_submissions():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, type, ad, soyad, yas, ilgi_alanlari, original_filename,
-                       content_json, server_note, processed_at, status
+                SELECT id, type, first_name, last_name, age, interests,
+                       original_filename, content_json, server_note, processed_at, status
                 FROM submissions
                 ORDER BY id DESC
             """)
@@ -217,10 +248,10 @@ def download_submissions():
         result.append({
             "id": row[0],
             "type": row[1],
-            "ad": row[2],
-            "soyad": row[3],
-            "yas": row[4],
-            "ilgi_alanlari": row[5],
+            "first_name": row[2],
+            "last_name": row[3],
+            "age": row[4],
+            "interests": row[5],
             "original_filename": row[6],
             "content_json": row[7],
             "server_note": row[8],
