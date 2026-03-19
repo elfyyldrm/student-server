@@ -11,12 +11,10 @@ app = FastAPI()
 
 TIMEZONE = ZoneInfo("Europe/Istanbul")
 OPEN_HOUR = 9
-CLOSE_HOUR = 17
+CLOSE_HOUR = 18
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Sadece debug/test için True yap.
-# True ise her startup'ta submissions tablosu silinir ve yeniden oluşturulur.
-RESET_TABLE_ON_STARTUP = True
+TABLE_NAME = "submissions1"
 
 
 class StudentInfo(BaseModel):
@@ -61,11 +59,8 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         with conn.cursor() as cur:
-            if RESET_TABLE_ON_STARTUP:
-                cur.execute("DROP TABLE IF EXISTS submissions")
-
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS submissions (
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
                     id SERIAL PRIMARY KEY,
                     type TEXT NOT NULL,
                     first_name TEXT,
@@ -91,9 +86,10 @@ def startup():
 def home():
     now = datetime.now(TIMEZONE)
     return {
-        "message": "Server is running - ENGLISH_COLUMNS_DEBUG_V1",
+        "message": "Server is running - submissions1 version",
         "current_time": now.isoformat(),
-        "server_accepting_requests": server_open_now()
+        "server_accepting_requests": server_open_now(),
+        "table_name": TABLE_NAME
     }
 
 
@@ -104,7 +100,7 @@ def debug_db():
             with conn.cursor() as cur:
                 cur.execute("SELECT 1;")
                 result = cur.fetchone()
-        return {"status": "ok", "result": result[0]}
+        return {"status": "ok", "result": result[0], "table_name": TABLE_NAME}
     except Exception as e:
         return JSONResponse(
             status_code=500,
@@ -120,12 +116,15 @@ def debug_columns():
                 cur.execute("""
                     SELECT column_name
                     FROM information_schema.columns
-                    WHERE table_name = 'submissions'
+                    WHERE table_name = %s
                     ORDER BY ordinal_position
-                """)
+                """, (TABLE_NAME,))
                 rows = cur.fetchall()
 
-        return {"columns": [r[0] for r in rows]}
+        return {
+            "table_name": TABLE_NAME,
+            "columns": [r[0] for r in rows]
+        }
     except Exception as e:
         return JSONResponse(
             status_code=500,
@@ -159,8 +158,8 @@ def submit_json(data: StudentInfo):
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO submissions
+                cur.execute(f"""
+                    INSERT INTO {TABLE_NAME}
                     (type, first_name, last_name, age, interests, original_filename, content_json, server_note, processed_at, status)
                     VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
                     RETURNING id
@@ -226,8 +225,8 @@ async def submit_file(file: UploadFile = File(...)):
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO submissions
+                cur.execute(f"""
+                    INSERT INTO {TABLE_NAME}
                     (type, first_name, last_name, age, interests, original_filename, content_json, server_note, processed_at, status)
                     VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
                     RETURNING id
@@ -260,10 +259,10 @@ def get_submissions():
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT id, type, first_name, last_name, age, interests,
                            original_filename, content_json, server_note, processed_at, status
-                    FROM submissions
+                    FROM {TABLE_NAME}
                     ORDER BY id DESC
                 """)
                 rows = cur.fetchall()
@@ -297,10 +296,10 @@ def download_submissions():
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT id, type, first_name, last_name, age, interests,
                            original_filename, content_json, server_note, processed_at, status
-                    FROM submissions
+                    FROM {TABLE_NAME}
                     ORDER BY id DESC
                 """)
                 rows = cur.fetchall()
