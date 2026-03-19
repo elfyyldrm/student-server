@@ -14,6 +14,10 @@ OPEN_HOUR = 9
 CLOSE_HOUR = 17
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Sadece debug/test için True yap.
+# True ise her startup'ta submissions tablosu silinir ve yeniden oluşturulur.
+RESET_TABLE_ON_STARTUP = True
+
 
 class StudentInfo(BaseModel):
     first_name: str
@@ -57,6 +61,9 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         with conn.cursor() as cur:
+            if RESET_TABLE_ON_STARTUP:
+                cur.execute("DROP TABLE IF EXISTS submissions")
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS submissions (
                     id SERIAL PRIMARY KEY,
@@ -84,10 +91,46 @@ def startup():
 def home():
     now = datetime.now(TIMEZONE)
     return {
-        "message": "Server is running",
+        "message": "Server is running - ENGLISH_COLUMNS_DEBUG_V1",
         "current_time": now.isoformat(),
         "server_accepting_requests": server_open_now()
     }
+
+
+@app.get("/debug-db")
+def debug_db():
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+                result = cur.fetchone()
+        return {"status": "ok", "result": result[0]}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": str(e)}
+        )
+
+
+@app.get("/debug-columns")
+def debug_columns():
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = 'submissions'
+                    ORDER BY ordinal_position
+                """)
+                rows = cur.fetchall()
+
+        return {"columns": [r[0] for r in rows]}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": str(e)}
+        )
 
 
 @app.post("/submit")
@@ -113,27 +156,33 @@ def submit_json(data: StudentInfo):
         "status": status
     }
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO submissions
-                (type, first_name, last_name, age, interests, original_filename, content_json, server_note, processed_at, status)
-                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
-                RETURNING id
-            """, (
-                "json",
-                data.first_name,
-                data.last_name,
-                data.age,
-                json.dumps(data.interests, ensure_ascii=False),
-                None,
-                json.dumps(response_payload, ensure_ascii=False),
-                server_note,
-                processed_at,
-                status
-            ))
-            submission_id = cur.fetchone()[0]
-        conn.commit()
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO submissions
+                    (type, first_name, last_name, age, interests, original_filename, content_json, server_note, processed_at, status)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    "json",
+                    data.first_name,
+                    data.last_name,
+                    data.age,
+                    json.dumps(data.interests, ensure_ascii=False),
+                    None,
+                    json.dumps(response_payload, ensure_ascii=False),
+                    server_note,
+                    processed_at,
+                    status
+                ))
+                submission_id = cur.fetchone()[0]
+            conn.commit()
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Database insert failed: {str(e)}"}
+        )
 
     response_payload["id"] = submission_id
     return response_payload
@@ -174,27 +223,33 @@ async def submit_file(file: UploadFile = File(...)):
         "status": status
     }
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO submissions
-                (type, first_name, last_name, age, interests, original_filename, content_json, server_note, processed_at, status)
-                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
-                RETURNING id
-            """, (
-                "file",
-                data.first_name,
-                data.last_name,
-                data.age,
-                json.dumps(data.interests, ensure_ascii=False),
-                file.filename,
-                json.dumps(modified_data, ensure_ascii=False),
-                server_note,
-                processed_at,
-                status
-            ))
-            submission_id = cur.fetchone()[0]
-        conn.commit()
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO submissions
+                    (type, first_name, last_name, age, interests, original_filename, content_json, server_note, processed_at, status)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    "file",
+                    data.first_name,
+                    data.last_name,
+                    data.age,
+                    json.dumps(data.interests, ensure_ascii=False),
+                    file.filename,
+                    json.dumps(modified_data, ensure_ascii=False),
+                    server_note,
+                    processed_at,
+                    status
+                ))
+                submission_id = cur.fetchone()[0]
+            conn.commit()
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Database insert failed: {str(e)}"}
+        )
 
     modified_data["id"] = submission_id
     return JSONResponse(content=modified_data)
@@ -202,15 +257,21 @@ async def submit_file(file: UploadFile = File(...)):
 
 @app.get("/submissions")
 def get_submissions():
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, type, first_name, last_name, age, interests,
-                       original_filename, content_json, server_note, processed_at, status
-                FROM submissions
-                ORDER BY id DESC
-            """)
-            rows = cur.fetchall()
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, type, first_name, last_name, age, interests,
+                           original_filename, content_json, server_note, processed_at, status
+                    FROM submissions
+                    ORDER BY id DESC
+                """)
+                rows = cur.fetchall()
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Database read failed: {str(e)}"}
+        )
 
     result = []
     for row in rows:
@@ -233,15 +294,21 @@ def get_submissions():
 
 @app.get("/download-submissions")
 def download_submissions():
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, type, first_name, last_name, age, interests,
-                       original_filename, content_json, server_note, processed_at, status
-                FROM submissions
-                ORDER BY id DESC
-            """)
-            rows = cur.fetchall()
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, type, first_name, last_name, age, interests,
+                           original_filename, content_json, server_note, processed_at, status
+                    FROM submissions
+                    ORDER BY id DESC
+                """)
+                rows = cur.fetchall()
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Database read failed: {str(e)}"}
+        )
 
     result = []
     for row in rows:
